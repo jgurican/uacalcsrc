@@ -4,6 +4,7 @@ package org.uacalc.io;
 import java.io.*;
 import java.util.*;
 
+import org.uacalc.lat.BasicLattice;
 import org.xml.sax.*;
 import org.xml.sax.helpers.DefaultHandler;
 import javax.xml.parsers.SAXParserFactory;
@@ -15,7 +16,9 @@ import org.uacalc.alg.conlat.*;
 import org.uacalc.alg.op.Operation;
 import org.uacalc.alg.op.OperationSymbol;
 import org.uacalc.alg.op.Operations;
+import org.uacalc.alg.op.Operations;
 import org.uacalc.util.*;
+import org.latdraw.orderedset.*;
 
 /**
  * XML reading. Eventually we will have "project" files with multiple
@@ -43,6 +46,8 @@ public final class AlgebraReader extends DefaultHandler {
   private String powerString = EMPTY_STRING;
   private String powersString = EMPTY_STRING;
   private String rowString = EMPTY_STRING;
+  private String labelsString = EMPTY_STRING;
+  private String covString = EMPTY_STRING;
   private String intArrayString = EMPTY_STRING;
   private String productElemString = EMPTY_STRING;
 
@@ -62,6 +67,9 @@ public final class AlgebraReader extends DefaultHandler {
   //private OperationSymbol opSym;
   //private Operation op;
   private List<Operation> ops = new ArrayList<Operation>();
+  private OrderedSet underlyingPoset;
+  private List labels = new ArrayList();
+  private List upperCovers = new ArrayList();
   private int[] intArray;
   private int intArrayIndex;
   private List<IntArray> universe = new ArrayList<IntArray>();
@@ -75,7 +83,7 @@ public final class AlgebraReader extends DefaultHandler {
   private Map<String,String> nameDescMap = new HashMap<String,String>();
   //private Deque<String> descStack = new LinkedList<String>();
   private Deque<String> algNameStack = new LinkedList<String>();
-  
+
   public AlgebraReader(File file) throws IOException {
     this.file = file;
   }
@@ -87,7 +95,7 @@ public final class AlgebraReader extends DefaultHandler {
   public AlgebraReader(InputStream is) throws IOException {
     this.inputStream = is;
   }
-  
+
   public SmallAlgebra readAlgebraFile() throws IOException, SAXException,
                                                ParserConfigurationException {
     //  Use an instance of ourselves as the SAX event handler
@@ -98,7 +106,7 @@ public final class AlgebraReader extends DefaultHandler {
     saxParser.parse(file, handler);
     return algebra;
   }
-  
+
   public SmallAlgebra readAlgebraFromStream() throws IOException, SAXException,
                                                ParserConfigurationException {
     // Use an instance of ourselves as the SAX event handler
@@ -109,7 +117,7 @@ public final class AlgebraReader extends DefaultHandler {
     saxParser.parse(inputStream, handler);
     return algebra;
   }
-  
+
   public List<SmallAlgebra> readAlgebraListFile() throws IOException, SAXException,
                                                ParserConfigurationException {
     //  Use an instance of ourselves as the SAX event handler
@@ -120,7 +128,7 @@ public final class AlgebraReader extends DefaultHandler {
     saxParser.parse(file, handler);
     return algebraList;
   }
-  
+
   public List<SmallAlgebra> readAlgebraListFromStream() throws IOException, SAXException,
                                                            ParserConfigurationException {
     //  Use an instance of ourselves as the SAX event handler
@@ -141,10 +149,12 @@ public final class AlgebraReader extends DefaultHandler {
     powerString = EMPTY_STRING;
     powersString = EMPTY_STRING;
     rowString = EMPTY_STRING;
+    labelsString = EMPTY_STRING;
+    covString = EMPTY_STRING;
     intArrayString = EMPTY_STRING;
     productElemString = EMPTY_STRING;
   }
-  
+
   private String currentTag() {
     return (String)tagStack.first();
   }
@@ -160,7 +170,7 @@ public final class AlgebraReader extends DefaultHandler {
     final int n = strArr.length;
     for (int i = 0; i < n; i++) {
       intArray[intArrayIndex + i] = Integer.parseInt(strArr[i]);
-    } 
+    }
     intArrayIndex = intArrayIndex + n;
   }
 
@@ -170,10 +180,23 @@ public final class AlgebraReader extends DefaultHandler {
     int[] ans = new int[n];
     for (int i = 0; i < n; i++) {
       ans[i] = Integer.parseInt(strArr[i]);
-    } 
+    }
     return ans;
   }
-  
+
+  private List rawList(String str) {
+    String[] strArr = str.split(",\\s*");
+    final int n = strArr.length;
+    List ans = new ArrayList(n);
+    if (str.isEmpty()) {
+      return ans;
+    }
+    for (int i = 0; i < n; i++) {
+      ans.add(strArr[i]);
+    }
+    return ans;
+  }
+
   private IntArray intArray(String str) {
     return new IntArray(rawIntArray(str));
   }
@@ -195,6 +218,7 @@ public final class AlgebraReader extends DefaultHandler {
     if ("power".equals(elemName)) powerString = EMPTY_STRING;
     if ("powers".equals(elemName)) powersString = EMPTY_STRING;
     if ("row".equals(elemName)) rowString = EMPTY_STRING;
+    if ("cov".equals(elemName)) covString = EMPTY_STRING;
     if ("productElem".equals(elemName)) productElemString = EMPTY_STRING;
     if ("intArray".equals(elemName)) intArrayString = EMPTY_STRING;
 
@@ -203,6 +227,10 @@ public final class AlgebraReader extends DefaultHandler {
     if ("productAlgebra".equals(elemName)) algType = PRODUCT;
     if ("quotientAlgebra".equals(elemName)) algType = QUOTIENT;
     if ("subAlgebra".equals(elemName)) algType = SUBALGEBRA;
+    if ("basicLattice".equals(elemName)) algType = BASIC;
+    if ("pAlgebra".equals(elemName)) algType = BASIC;
+    if ("brouwerianAlgebra".equals(elemName)) algType = BASIC;
+    if ("heytingAlgebra".equals(elemName)) algType = BASIC;
     if ("opTable".equals(elemName)) {
       int h = 1;
       for (int i = 0; i < arity; i++ ) {
@@ -228,7 +256,7 @@ public final class AlgebraReader extends DefaultHandler {
    */
   public void characters(char buf[], int offset, int len) throws SAXException {
     //System.out.println("calling characters with tagStack = " + tagStack);
-    
+
     String s = new String(buf, offset, len);
     if ("algName".equals(currentTag())) algNameString += s;
     if ("opName".equals(currentTag())) opNameString += s;
@@ -237,6 +265,8 @@ public final class AlgebraReader extends DefaultHandler {
     if ("arity".equals(currentTag())) arityString += s;
     if ("power".equals(currentTag())) powerString += s;
     if ("row".equals(currentTag())) rowString += s;
+    if ("labels".equals(currentTag())) labelsString += s;
+    if ("cov".equals(currentTag())) covString += s;
     if ("intArray".equals(currentTag())) {
       if ("congruence".equals(parentTag()) && s.length() > 0) {
         intArrayString += s;
@@ -249,11 +279,11 @@ public final class AlgebraReader extends DefaultHandler {
         powersString += s;
       }
     }
-    
+
     if ("productElem".equals(currentTag())) productElemString += s;
   }
 
-  public void endElement(String namespaceURI, String lName, String qName) 
+  public void endElement(String namespaceURI, String lName, String qName)
                                                        throws SAXException {
     //System.out.println("calling endElement with tagstack = " + tagStack + " \nand poping");
     String parent = parentTag();
@@ -275,16 +305,18 @@ public final class AlgebraReader extends DefaultHandler {
     if ("opName".equals(elemName)) opName = opNameString.trim();
     if ("desc".equals(elemName)) {
       desc = descString.trim();
-      // note for this to work desc, if it exists, should come after algName 
+      // note for this to work desc, if it exists, should come after algName
       nameDescMap.put(algName, desc);
       descString = EMPTY_STRING;
     }
-    if ("cardinality".equals(elemName)) 
+    if ("cardinality".equals(elemName))
             cardinality = Integer.parseInt(cardinalityString.trim());
     if ("arity".equals(elemName)) arity = Integer.parseInt(arityString.trim());
     if ("power".equals(elemName)) power = Integer.parseInt(powerString.trim());
     if ("powers".equals(elemName)) powers = rawIntArray(powersString.trim());
     if ("row".equals(elemName)) intRow(rowString.trim());
+    if ("labels".equals(elemName)) labels = rawList(labelsString.trim());
+    if ("cov".equals(elemName)) upperCovers.add(rawList(covString.trim()));
     if ("intArray".equals(elemName) && "congruence".equals(parent)) {
       intArrayString = intArrayString.trim();
       if (intArrayString.length() > 0) intArray = rawIntArray(intArrayString);
@@ -300,7 +332,7 @@ public final class AlgebraReader extends DefaultHandler {
     }
 
     if ("op".equals(elemName)) {
-      ops.add(Operations.makeIntOperation(opName, arity, cardinality, 
+      ops.add(Operations.makeIntOperation(opName, arity, cardinality,
                    Horner.leftRightReverse(intArray, cardinality, arity)));
     }
     if ("subUniverse".equals(elemName)) {
@@ -317,6 +349,108 @@ public final class AlgebraReader extends DefaultHandler {
       addDescription();
       ops = new ArrayList<Operation>();
     }
+
+    if ("basicLattice".equals(elemName)) {
+      String tmp = algNameStack.peekFirst();
+      try {
+        underlyingPoset = new OrderedSet(tmp,labels,upperCovers);
+
+        BasicLattice algebra = new BasicLattice(tmp, underlyingPoset);
+
+        addMeetAndJoinOperations(algebra);
+
+        this.algebra = (SmallAlgebra) algebra;
+        addDescription();
+      } catch (NonOrderedSetException e) {
+          System.out.println(e.getMessage());
+          return;
+      }
+    }
+
+
+    if ("pAlgebra".equals(elemName)) {
+      String tmp = algNameStack.peekFirst();
+      try {
+        underlyingPoset = new OrderedSet(tmp,labels,upperCovers);
+        BasicLattice algebra = new BasicLattice(tmp, underlyingPoset);
+
+        addMeetAndJoinOperations(algebra);
+        addPseudoComplementOperation(algebra);
+        addConstantOperation(algebra, "zero");
+
+
+        this.algebra = (SmallAlgebra) algebra;
+        addDescription();
+      } catch (NonOrderedSetException e) {
+        System.out.println(e.getMessage());
+        return;
+      }
+    }
+
+    if ("heytingAlgebra".equals(elemName)) {
+      String tmp = algNameStack.peekFirst();
+      try {
+        underlyingPoset = new OrderedSet(tmp,labels,upperCovers);
+        BasicLattice algebra = new BasicLattice(tmp, underlyingPoset);
+
+        addMeetAndJoinOperations(algebra);
+        addRelativeComplements(algebra);
+        // This is a little overkill, we can do it via ipm(x,0)
+        addPseudoComplementOperation(algebra);
+        addConstantOperation(algebra, "zero");
+        addConstantOperation(algebra, "one");
+
+        this.algebra = (SmallAlgebra) algebra;
+        addDescription();
+      } catch (NonOrderedSetException e) {
+        System.out.println(e.getMessage());
+        return;
+      }
+    }
+
+    if ("brouwerianAlgebra".equals(elemName)) {
+      String tmp = algNameStack.peekFirst();
+      try {
+        underlyingPoset = new OrderedSet(tmp,labels,upperCovers);
+
+        BasicLattice algebra = new BasicLattice(tmp, underlyingPoset);
+
+        addMeetAndJoinOperations(algebra);
+        addRelativeComplements(algebra);
+
+        // preparing implication operation
+/*
+        int s = algebra.cardinality();
+        int[] imp_table = new int[s*s];
+        for (int i = 0; i< s; i++) {
+          for (int j = 0; j < s; j++) {
+            POElem a = (POElem) algebra.getElement(i);
+            POElem b = (POElem) algebra.getElement(j);
+            if ( algebra.leq(a,b) ) {
+              imp_table[i*s+j] = s-1;
+            } else if ( algebra.leq(b,a) && !a.equals(b)) {
+              imp_table[i*s+j] = j;
+            } else {
+              // do real thing
+            }
+
+          }
+        }
+        algebra.operations().add(Operations.makeIntOperation("impl", 2, s,
+                Horner.leftRightReverse(imp_table, s, 2)));
+*/
+        //one as a nullary operation
+        addConstantOperation(algebra,"one");
+
+        this.algebra = (SmallAlgebra) algebra;
+        addDescription();
+      } catch (NonOrderedSetException e) {
+        System.out.println(e.getMessage());
+        return;
+      }
+    }
+
+
     if ("factor".equals(elemName)) {
       factors.add(algebra);
     }
@@ -334,7 +468,7 @@ public final class AlgebraReader extends DefaultHandler {
       else algebra = new PowerAlgebra(tmp, rootAlgebra, power);
       addDescription();
     }
-      
+
     if ("productAlgebra".equals(elemName)) {
       String tmp = algNameStack.peekFirst();
       if (tmp != null) algebra = new ProductAlgebra(tmp, factors);
@@ -344,7 +478,7 @@ public final class AlgebraReader extends DefaultHandler {
     }
     if ("bigProductAlgebra".equals(elemName)) {
       String tmp = algNameStack.peekFirst();
-      if (tmp != null) bigAlgebra = new BigProductAlgebra(tmp, 
+      if (tmp != null) bigAlgebra = new BigProductAlgebra(tmp,
                                                (List<SmallAlgebra>)factors, powers);
       else  bigAlgebra = new BigProductAlgebra((List<SmallAlgebra>)factors, powers);
       addDescription();
@@ -354,10 +488,10 @@ public final class AlgebraReader extends DefaultHandler {
       // we hack around the super tag by just skipping it since
       // the BigProductAlgebra cannot be cast into a SmallAlgebra.
       String tmp = algNameStack.peekFirst();
-      
-      algebra = new SubProductAlgebra(tmp, (BigProductAlgebra)bigAlgebra, 
+
+      algebra = new SubProductAlgebra(tmp, (BigProductAlgebra)bigAlgebra,
                            (List<IntArray>)generators, (List<IntArray>)universe);
-      addDescription();      
+      addDescription();
     }
     if ("subAlgebra".equals(elemName)) {
       //System.out.println("superAlgebra size = " + superAlgebra.cardinality());
@@ -387,7 +521,7 @@ public final class AlgebraReader extends DefaultHandler {
   }
 
   /**
-   * This also does some clean up: 
+   * This also does some clean up:
    * pop'ing the algNameStack and setting algName to null.
    */
   private void addDescription() {
@@ -400,7 +534,7 @@ public final class AlgebraReader extends DefaultHandler {
       // pop if a name was given
       // this is not a perfect solution: if some but not all algebras in a
       // product are missing names, the names may go in the wrong places.
-      if (!algNameStack.isEmpty()) algNameStack.pop(); 
+      if (!algNameStack.isEmpty()) algNameStack.pop();
       algName = null;
     }
     //if (algebra != null && !EMPTY_STRING.equals(descString)) {
@@ -408,8 +542,103 @@ public final class AlgebraReader extends DefaultHandler {
     //  descString = EMPTY_STRING;
     //}
   }
- 
-  public static void main(String[] args) throws ParserConfigurationException, 
+
+  void addMeetAndJoinOperations(BasicLattice lattice) {
+
+    int s = lattice.cardinality();
+    int[] join_table = new int[s*s];
+    int[] meet_table = new int[s*s];
+
+    // prepare/fill in tables for join and meet
+    for (int i = 0; i< s; i++) {
+      for (int j = i; j < s; j++) {
+        List args = new ArrayList(2);
+        args.add((POElem) lattice.getElement(i));
+        args.add((POElem) lattice.getElement(j));
+        int join = lattice.elementIndex(lattice.join(args));
+        int meet = lattice.elementIndex(lattice.meet(args));
+
+        join_table[i*s+j] = join;
+        join_table[j*s+i] = join;
+        meet_table[i*s+j] = meet;
+        meet_table[j*s+i] = meet;
+      }
+    }
+
+    lattice.operations().remove(1);
+    lattice.operations().remove(0);
+
+    lattice.operations().add(Operations.makeIntOperation("join", 2, s,
+            Horner.leftRightReverse(join_table, s, 2)));
+    lattice.operations().add(Operations.makeIntOperation("meet", 2, s,
+            Horner.leftRightReverse(meet_table, s, 2)));
+  }
+
+  void addPseudoComplementOperation(BasicLattice lattice) {
+    // prepare the table for pseudocomplenet
+    POElem zero = lattice.zero();
+    int s = lattice.cardinality();
+    int[] pc_table = new int[s];
+    for (int i = 0; i < s; i++) {
+      POElem pc = zero;
+      for (int j = 0; j < s; j++) {
+        POElem candidate = (POElem) lattice.getElement(j);
+        POElem meet_result = (POElem) lattice.meet((POElem) lattice.getElement(i), candidate);
+        boolean OKmeet0 = zero.equals(meet_result);
+        if (zero.equals(meet_result) && lattice.leq(pc, candidate) && !pc.equals(candidate)) pc = candidate;
+      }
+      pc_table[i] = lattice.elementIndex(pc);
+    }
+    // add the operation
+    lattice.operations().add(Operations.makeIntOperation("pc", 1, s,
+            Horner.leftRightReverse(pc_table, s, 1)));
+  }
+
+  void addRelativeComplements(BasicLattice lattice) {
+    // preparing implication operation
+    int s = lattice.cardinality();
+    int[] imp_table = new int[s * s];
+    for (int i = 0; i < s; i++) {
+      for (int j = 0; j < s; j++) {
+        POElem a = (POElem) lattice.getElement(i);
+        POElem b = (POElem) lattice.getElement(j);
+        if (lattice.leq(a, b)) {
+          imp_table[i * s + j] = s - 1;
+        } else {
+          // do real thing
+          // get a meet
+          POElem meet_result = (POElem) lattice.meet(a, b);
+          POElem candidate = meet_result;
+          for (int k = lattice.elementIndex(meet_result); k < s ;k++) {
+            POElem test = (POElem) lattice.getElement(k);
+            // the second test is probably not necessary, but we want to be sure
+            if (lattice.leq(lattice.meet(a,test),b) && lattice.leq(candidate,test)) candidate = test;
+          }
+          imp_table[i * s + j] = lattice.elementIndex(candidate);
+        }
+
+      }
+    }
+    lattice.operations().add(Operations.makeIntOperation("impl", 2, s,
+            Horner.leftRightReverse(imp_table, s, 2)));
+  }
+
+  void addConstantOperation(BasicLattice lattice, String constant) {
+    POElem nullary = lattice.zero();
+    if ("zero".equalsIgnoreCase(constant)) {
+      nullary = lattice.zero();
+    } else if ("one".equalsIgnoreCase(constant)) {
+      nullary =lattice.one();
+    }
+
+    int s = lattice.cardinality();
+    int[] const_table = new int[1];
+    const_table[0] = lattice.elementIndex(nullary);
+    lattice.operations().add(Operations.makeIntOperation(constant, 0, s,
+            Horner.leftRightReverse(const_table, s, 0)));
+  }
+
+  public static void main(String[] args) throws ParserConfigurationException,
                           SAXException, IOException, BadAlgebraFileException {
     //if (args.length == 0) return;
     //System.out.println("reading " + args[0]);
